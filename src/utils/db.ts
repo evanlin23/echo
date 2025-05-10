@@ -42,9 +42,12 @@ export const getAllSongs = async (): Promise<Song[]> => {
       
       // Create blob URLs for each song's file data
       const songsWithBlobUrls = songs.map(song => {
-        // If the file is already a blob URL, just return the song
+        // If the file is already a blob URL, use it for both file and url
         if (typeof song.file === 'string' && song.file.startsWith('blob:')) {
-          return song;
+          return {
+            ...song,
+            url: song.file
+          };
         }
         
         // If the file is stored as a Blob or ArrayBuffer, create a blob URL
@@ -55,7 +58,7 @@ export const getAllSongs = async (): Promise<Song[]> => {
           
           return {
             ...song,
-            file: URL.createObjectURL(blob)
+            url: URL.createObjectURL(blob)
           };
         }
         

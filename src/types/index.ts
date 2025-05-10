@@ -5,4 +5,5 @@ export interface Song {
   artist: string;
   duration: number;
   file: string | Blob | ArrayBuffer;
+  url?: string;
 }

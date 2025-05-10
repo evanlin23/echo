@@ -45,7 +45,10 @@ export default function App() {
     // Clean up object URLs when component unmounts
     return () => {
       songs.forEach(song => {
-        if (song.file && typeof song.file === 'string' && song.file.startsWith('blob:')) {
+        if (song.url && song.url.startsWith('blob:')) {
+          URL.revokeObjectURL(song.url);
+        }
+        if (typeof song.file === 'string' && song.file.startsWith('blob:')) {
           URL.revokeObjectURL(song.file);
         }
       });
@@ -54,12 +57,16 @@ export default function App() {
 
   // Play/pause logic
   useEffect(() => {
-    if (audioRef.current) {
+    if (audioRef.current && currentSong) {
       if (isPlaying) {
         // Fix potential bug: always reload audio source when changing songs
         // This ensures we're playing the correct file
-        if (currentSong && audioRef.current.src !== currentSong.file) {
-          audioRef.current.src = currentSong.file;
+        // Get the playable URL from either url or file (if it's a string)
+        const playableUrl = currentSong.url || 
+          (typeof currentSong.file === 'string' ? currentSong.file : '');
+        
+        if (playableUrl && audioRef.current.src !== playableUrl) {
+          audioRef.current.src = playableUrl;
         }
         
         audioRef.current.play().catch((error: Error) => {
@@ -132,7 +139,8 @@ export default function App() {
             title: file.name.replace(/\.[^/.]+$/, ""), // Remove file extension
             artist: "Unknown Artist",
             duration: audio.duration || 0,
-            file: blobUrl
+            file: file, // Store the actual file
+            url: blobUrl // Store the playable URL
           };
           
           // Store the actual file blob in IndexedDB
@@ -173,8 +181,14 @@ export default function App() {
       
       // Find the song to get its URL
       const songToDelete = songs.find(song => song.id === id);
-      if (songToDelete && songToDelete.file && typeof songToDelete.file === 'string' && songToDelete.file.startsWith('blob:')) {
-        URL.revokeObjectURL(songToDelete.file);
+      if (songToDelete) {
+        // Clean up blob URLs
+        if (songToDelete.url && songToDelete.url.startsWith('blob:')) {
+          URL.revokeObjectURL(songToDelete.url);
+        }
+        if (typeof songToDelete.file === 'string' && songToDelete.file.startsWith('blob:')) {
+          URL.revokeObjectURL(songToDelete.file);
+        }
       }
       
       // Delete from IndexedDB
@@ -262,9 +276,11 @@ export default function App() {
         {/* Audio element (hidden) */}
         <audio 
           ref={audioRef} 
-          src={currentSong?.file || ""} 
-          // REVIEW: This key attribute forces the audio element to re-render when the song changes
-          // This helps prevent playback issues when switching between songs
+          src={
+            currentSong 
+              ? (currentSong.url || (typeof currentSong.file === 'string' ? currentSong.file : ""))
+              : ""
+          }
           key={currentSong?.id || "empty"} 
         />
         
