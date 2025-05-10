@@ -27,33 +27,12 @@ export default function App() {
         setIsLoading(true);
         const dbSongs = await getAllSongs();
         
-        // Create object URLs for each song's audio data
-        const songsWithUrls = dbSongs.map((song: Song) => {
-          if (song.file.startsWith('blob:')) {
-            // If it's already a blob URL, use it
-            return song;
-          } else if (song.file.startsWith('data:')) {
-            // Convert data URL to blob and create object URL
-            try {
-              const byteCharacters = atob(song.file.split(',')[1]);
-              const byteNumbers = new Array(byteCharacters.length);
-              
-              for (let i = 0; i < byteCharacters.length; i++) {
-                byteNumbers[i] = byteCharacters.charCodeAt(i);
-              }
-              
-              const byteArray = new Uint8Array(byteNumbers);
-              const blob = new Blob([byteArray], { type: 'audio/mpeg' });
-              return { ...song, file: URL.createObjectURL(blob) };
-            } catch (e) {
-              console.error("Error creating blob URL for song:", e);
-              return song;
-            }
-          }
-          return song;
-        });
+        setSongs(dbSongs);
         
-        setSongs(songsWithUrls);
+        // If we have songs and no current song, set the first one
+        if (dbSongs.length > 0 && !currentSong) {
+          setCurrentSong(dbSongs[0]);
+        }
       } catch (error) {
         console.error("Failed to load songs:", error);
       } finally {
@@ -66,7 +45,7 @@ export default function App() {
     // Clean up object URLs when component unmounts
     return () => {
       songs.forEach(song => {
-        if (song.file && song.file.startsWith('blob:')) {
+        if (song.file && typeof song.file === 'string' && song.file.startsWith('blob:')) {
           URL.revokeObjectURL(song.file);
         }
       });
@@ -133,7 +112,7 @@ export default function App() {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         try {
-          // Create a blob URL directly instead of storing as data URL
+          // Create a blob URL for playback
           const blobUrl = URL.createObjectURL(file);
           
           // Create audio element to get duration
@@ -156,10 +135,10 @@ export default function App() {
             file: blobUrl
           };
           
-          // Store in IndexedDB
-          await addSongToDB(newSong);
+          // Store the actual file blob in IndexedDB
+          await addSongToDB(newSong, file);
           
-          // Add to our new songs array
+          // Add to our new songs array with blob URL for playback
           newSongs.push(newSong);
         } catch (error) {
           console.error(`Error processing file ${file.name}:`, error);
@@ -194,7 +173,7 @@ export default function App() {
       
       // Find the song to get its URL
       const songToDelete = songs.find(song => song.id === id);
-      if (songToDelete && songToDelete.file && songToDelete.file.startsWith('blob:')) {
+      if (songToDelete && songToDelete.file && typeof songToDelete.file === 'string' && songToDelete.file.startsWith('blob:')) {
         URL.revokeObjectURL(songToDelete.file);
       }
       

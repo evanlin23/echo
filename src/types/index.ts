@@ -4,5 +4,5 @@ export interface Song {
   title: string;
   artist: string;
   duration: number;
-  file: string;
+  file: string | Blob | ArrayBuffer;
 }

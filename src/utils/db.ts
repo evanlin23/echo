@@ -23,6 +23,7 @@ export const initDB = (): Promise<IDBDatabase> => {
     request.onupgradeneeded = () => {
       const db = request.result;
       if (!db.objectStoreNames.contains(SONGS_STORE)) {
+        // Store the audio file data as a blob in the database
         db.createObjectStore(SONGS_STORE, { keyPath: 'id' });
       }
     };
@@ -37,7 +38,31 @@ export const getAllSongs = async (): Promise<Song[]> => {
     const request = store.getAll();
     
     request.onsuccess = () => {
-      resolve(request.result as Song[]);
+      const songs = request.result as Song[];
+      
+      // Create blob URLs for each song's file data
+      const songsWithBlobUrls = songs.map(song => {
+        // If the file is already a blob URL, just return the song
+        if (typeof song.file === 'string' && song.file.startsWith('blob:')) {
+          return song;
+        }
+        
+        // If the file is stored as a Blob or ArrayBuffer, create a blob URL
+        if (song.file instanceof Blob || song.file instanceof ArrayBuffer) {
+          const blob = song.file instanceof ArrayBuffer 
+            ? new Blob([song.file], { type: 'audio/mpeg' }) 
+            : song.file;
+          
+          return {
+            ...song,
+            file: URL.createObjectURL(blob)
+          };
+        }
+        
+        return song;
+      });
+      
+      resolve(songsWithBlobUrls);
     };
     
     request.onerror = (event: Event) => {
@@ -47,12 +72,20 @@ export const getAllSongs = async (): Promise<Song[]> => {
   });
 };
 
-export const addSong = async (song: Song): Promise<Song> => {
+export const addSong = async (song: Song, fileData?: Blob): Promise<Song> => {
   const db = await initDB();
   return new Promise((resolve, reject) => {
     const transaction = db.transaction(SONGS_STORE, 'readwrite');
     const store = transaction.objectStore(SONGS_STORE);
-    const request = store.add(song);
+    
+    // If fileData is provided, add it to the song object
+    const songToStore = fileData ? {
+      ...song,
+      // Store the actual blob data instead of the URL
+      file: fileData
+    } : song;
+    
+    const request = store.add(songToStore);
     
     request.onsuccess = () => {
       resolve(song);
