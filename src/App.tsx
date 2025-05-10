@@ -1,0 +1,325 @@
+// src/App.tsx
+import React, { useState, useEffect, useRef } from 'react';
+import type { Song } from './types';
+import { getAllSongs, addSong as addSongToDB, deleteSongFromDB } from './utils/db';
+import { Header } from './components/Header';
+import { LibraryPanel } from './components/LibraryPanel';
+import { MusicPlayer } from './components/MusicPlayer';
+import { Footer } from './components/Footer';
+
+export default function App() {
+  // State for song list, current song, playback status, etc.
+  const [songs, setSongs] = useState<Song[]>([]);
+  const [currentSong, setCurrentSong] = useState<Song | null>(null);
+  const [isPlaying, setIsPlaying] = useState<boolean>(false);
+  const [currentTime, setCurrentTime] = useState<number>(0);
+  const [showLibrary, setShowLibrary] = useState<boolean>(false);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  
+  // References
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const progressBarRef = useRef<HTMLDivElement>(null);
+
+  // Load songs from IndexedDB on initial render
+  useEffect(() => {
+    const loadSongs = async () => {
+      try {
+        setIsLoading(true);
+        const dbSongs = await getAllSongs();
+        
+        // Create object URLs for each song's audio data
+        const songsWithUrls = dbSongs.map((song: Song) => {
+          if (song.file.startsWith('blob:')) {
+            // If it's already a blob URL, use it
+            return song;
+          } else if (song.file.startsWith('data:')) {
+            // Convert data URL to blob and create object URL
+            try {
+              const byteCharacters = atob(song.file.split(',')[1]);
+              const byteNumbers = new Array(byteCharacters.length);
+              
+              for (let i = 0; i < byteCharacters.length; i++) {
+                byteNumbers[i] = byteCharacters.charCodeAt(i);
+              }
+              
+              const byteArray = new Uint8Array(byteNumbers);
+              const blob = new Blob([byteArray], { type: 'audio/mpeg' });
+              return { ...song, file: URL.createObjectURL(blob) };
+            } catch (e) {
+              console.error("Error creating blob URL for song:", e);
+              return song;
+            }
+          }
+          return song;
+        });
+        
+        setSongs(songsWithUrls);
+      } catch (error) {
+        console.error("Failed to load songs:", error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    
+    loadSongs();
+    
+    // Clean up object URLs when component unmounts
+    return () => {
+      songs.forEach(song => {
+        if (song.file && song.file.startsWith('blob:')) {
+          URL.revokeObjectURL(song.file);
+        }
+      });
+    };
+  }, []);
+
+  // Play/pause logic
+  useEffect(() => {
+    if (audioRef.current) {
+      if (isPlaying) {
+        // Fix potential bug: always reload audio source when changing songs
+        // This ensures we're playing the correct file
+        if (currentSong && audioRef.current.src !== currentSong.file) {
+          audioRef.current.src = currentSong.file;
+        }
+        
+        audioRef.current.play().catch((error: Error) => {
+          console.error("Playback failed:", error);
+          setIsPlaying(false);
+        });
+      } else {
+        audioRef.current.pause();
+      }
+    }
+  }, [isPlaying, currentSong]);
+
+  // Update time as song plays
+  useEffect(() => {
+    const audio = audioRef.current;
+    
+    const updateTime = () => {
+      if (audio) {
+        setCurrentTime(audio.currentTime);
+      }
+    };
+    
+    const handleEnded = () => {
+      playNextSong();
+    };
+    
+    if (audio) {
+      audio.addEventListener('timeupdate', updateTime);
+      audio.addEventListener('ended', handleEnded);
+    }
+    
+    return () => {
+      if (audio) {
+        audio.removeEventListener('timeupdate', updateTime);
+        audio.removeEventListener('ended', handleEnded);
+      }
+    };
+  }, [currentSong]);
+
+  // Handle file upload
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    
+    setIsLoading(true);
+    
+    const processFiles = async () => {
+      const newSongs: Song[] = [];
+      
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        try {
+          // Create a blob URL directly instead of storing as data URL
+          const blobUrl = URL.createObjectURL(file);
+          
+          // Create audio element to get duration
+          const audio = new Audio(blobUrl);
+          
+          await new Promise<void>((resolve) => {
+            audio.onloadedmetadata = () => {
+              resolve();
+            };
+            
+            // If metadata fails to load, resolve after timeout
+            setTimeout(() => resolve(), 3000);
+          });
+          
+          const newSong: Song = {
+            id: crypto.randomUUID(),
+            title: file.name.replace(/\.[^/.]+$/, ""), // Remove file extension
+            artist: "Unknown Artist",
+            duration: audio.duration || 0,
+            file: blobUrl
+          };
+          
+          // Store in IndexedDB
+          await addSongToDB(newSong);
+          
+          // Add to our new songs array
+          newSongs.push(newSong);
+        } catch (error) {
+          console.error(`Error processing file ${file.name}:`, error);
+        }
+      }
+      
+      // Update state once with all new songs
+      setSongs(prevSongs => [...prevSongs, ...newSongs]);
+      
+      // If no songs were loaded before and we have new songs, set the first one as current
+      if (songs.length === 0 && !currentSong && newSongs.length > 0) {
+        setCurrentSong(newSongs[0]);
+      }
+      
+      setIsLoading(false);
+    };
+    
+    processFiles();
+    
+    // Reset the input
+    e.target.value = '';
+  };
+
+  // Delete a song
+  const deleteSong = async (id: string) => {
+    try {
+      // If the current song is being deleted, clear it
+      if (currentSong?.id === id) {
+        setCurrentSong(null);
+        setIsPlaying(false);
+      }
+      
+      // Find the song to get its URL
+      const songToDelete = songs.find(song => song.id === id);
+      if (songToDelete && songToDelete.file && songToDelete.file.startsWith('blob:')) {
+        URL.revokeObjectURL(songToDelete.file);
+      }
+      
+      // Delete from IndexedDB
+      await deleteSongFromDB(id);
+      
+      // Remove from state
+      setSongs(prevSongs => prevSongs.filter(song => song.id !== id));
+    } catch (error) {
+      console.error("Error deleting song:", error);
+    }
+  };
+
+  // Play a specific song
+  const playSong = (song: Song) => {
+    // Fix bug: create a new audio element if we're having issues with the current one
+    // or if the songs are getting glitched when switching around
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
+    
+    setCurrentSong(song);
+    setIsPlaying(true);
+  };
+
+  // Play the next song
+  const playNextSong = () => {
+    if (songs.length === 0) return;
+    
+    // Play the next song in order
+    const currentIndex = currentSong 
+      ? songs.findIndex(song => song.id === currentSong.id)
+      : -1;
+    
+    const nextIndex = (currentIndex + 1) % songs.length;
+    setCurrentSong(songs[nextIndex]);
+    setIsPlaying(true);
+  };
+
+  // Play the previous song
+  const playPrevSong = () => {
+    if (songs.length === 0) return;
+    
+    // If we're more than 3 seconds into the song, restart it
+    if (audioRef.current && audioRef.current.currentTime > 3) {
+      audioRef.current.currentTime = 0;
+      return;
+    }
+    
+    // Play the previous song in order
+    const currentIndex = currentSong 
+      ? songs.findIndex(song => song.id === currentSong.id)
+      : -1;
+    
+    const prevIndex = (currentIndex - 1 + songs.length) % songs.length;
+    setCurrentSong(songs[prevIndex]);
+    setIsPlaying(true);
+  };
+
+  // Seek to a specific time in the song
+  const handleSeek = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!progressBarRef.current || !audioRef.current || !currentSong) return;
+    
+    const progressBar = progressBarRef.current;
+    const bounds = progressBar.getBoundingClientRect();
+    const percent = (e.clientX - bounds.left) / bounds.width;
+    const newTime = percent * currentSong.duration;
+    
+    audioRef.current.currentTime = newTime;
+    setCurrentTime(newTime);
+  };
+
+  return (
+    <div className="min-h-screen w-full bg-gray-900 text-white flex flex-col">
+      {/* Header */}
+      <Header 
+        showLibrary={showLibrary}
+        setShowLibrary={setShowLibrary}
+        isLoading={isLoading}
+        handleFileUpload={handleFileUpload}
+      />
+
+      {/* Main content */}
+      <main className="flex-1 flex flex-col md:flex-row p-4 gap-4">
+        {/* Audio element (hidden) */}
+        <audio 
+          ref={audioRef} 
+          src={currentSong?.file || ""} 
+          // REVIEW: This key attribute forces the audio element to re-render when the song changes
+          // This helps prevent playback issues when switching between songs
+          key={currentSong?.id || "empty"} 
+        />
+        
+        {/* Library panel (conditionally shown) */}
+        {showLibrary && (
+          <LibraryPanel 
+            songs={songs}
+            currentSong={currentSong}
+            isLoading={isLoading}
+            playSong={playSong}
+            deleteSong={deleteSong}
+          />
+        )}
+        
+        {/* Player card (centered when library is hidden) */}
+        <div className={`flex-1 flex items-center justify-center ${showLibrary ? 'md:w-2/3 lg:w-3/4' : 'w-full'}`}>
+          <div className="w-full max-w-md bg-gray-800 rounded-lg p-6 shadow-lg">
+            <MusicPlayer 
+              currentSong={currentSong}
+              isPlaying={isPlaying}
+              setIsPlaying={setIsPlaying}
+              currentTime={currentTime}
+              handleSeek={handleSeek}
+              progressBarRef={progressBarRef}
+              playPrevSong={playPrevSong}
+              playNextSong={playNextSong}
+              isLoading={isLoading}
+            />
+          </div>
+        </div>
+      </main>
+      
+      {/* Footer */}
+      <Footer />
+    </div>
+  );
+}
